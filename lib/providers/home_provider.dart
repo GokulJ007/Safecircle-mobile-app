@@ -1,9 +1,14 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../models/journey_model.dart';
 import '../models/contact_model.dart';
+import '../services/location_service.dart';
+import '../services/journey_service.dart';
+import '../services/route_service.dart';
 
-/// Supplies mock dashboard and live journey simulation state.
+/// Supplies dashboard state and coordinates real GPS-based live tracking sessions.
 class HomeProvider extends ChangeNotifier {
   Timer? _simulationTimer;
 
@@ -14,9 +19,24 @@ class HomeProvider extends ChangeNotifier {
   String? _activeNotes;
   List<String> _activeSharedContactIds = [];
   DateTime? _activeStartTime;
-  int _activeBattery = 82; // Mock battery level as specified
+  int _activeBattery = 82; // Reset battery level to 82% as required
   int _journeySecondsElapsed = 0;
   bool _showSmartCheckIn = false;
+
+  // Real GPS live tracking fields
+  String? _activeJourneyId;
+  double? _currentLatitude;
+  double? _currentLongitude;
+  double? _destinationLatitude;
+  double? _destinationLongitude;
+  String _remainingDistance = 'Calculating...';
+  String _activeStatus = 'idle'; // idle, starting, active, ending, completed, error
+  String? _errorMessage;
+  List<LatLng> _activePolylinePoints = [];
+
+  StreamSubscription<Position>? _positionSubscription;
+  DateTime? _lastRouteRecalculationTime;
+  Position? _lastRouteRecalculationPosition;
 
   // Contacts state
   final List<ContactModel> _contacts = [
@@ -99,6 +119,16 @@ class HomeProvider extends ChangeNotifier {
   int get journeySecondsElapsed => _journeySecondsElapsed;
   bool get showSmartCheckIn => _showSmartCheckIn;
 
+  String? get activeJourneyId => _activeJourneyId;
+  double? get currentLatitude => _currentLatitude;
+  double? get currentLongitude => _currentLongitude;
+  double? get destinationLatitude => _destinationLatitude;
+  double? get destinationLongitude => _destinationLongitude;
+  String get remainingDistance => _remainingDistance;
+  String get activeStatus => _activeStatus;
+  String? get errorMessage => _errorMessage;
+  List<LatLng> get activePolylinePoints => _activePolylinePoints;
+
   List<ContactModel> get contacts => List.unmodifiable(_contacts);
   List<JourneyModel> get recentJourneys => List.unmodifiable(_recentJourneys);
 
@@ -157,37 +187,162 @@ class HomeProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Journey Operations
-  void startNewJourney({
+  // Real Journey Operations
+  Future<bool> startNewJourney({
     required String destination,
+    required double destLatitude,
+    required double destLongitude,
+    required double startLatitude,
+    required double startLongitude,
     required String eta,
+    required DateTime etaDateTime,
     String? notes,
     required List<String> contactIds,
-  }) {
-    if (_hasActiveJourney) return;
+    required String authToken,
+    required List<LatLng> initialPolylinePoints,
+    required String initialDistance,
+  }) async {
+    if (_hasActiveJourney) return false;
 
-    _hasActiveJourney = true;
-    _activeDestination = destination;
-    _activeEta = eta;
-    _activeNotes = notes;
-    _activeSharedContactIds = contactIds;
-    _activeStartTime = DateTime.now();
-    _activeBattery = 82; // Reset battery level to 82% as required
-    _journeySecondsElapsed = 0;
-    _showSmartCheckIn = false;
-
-    // Start Simulation Timer
-    _simulationTimer?.cancel();
-    _simulationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      _journeySecondsElapsed++;
-      // Auto-trigger check-in alert at 15 seconds to demonstrate Smart Check-In
-      if (_journeySecondsElapsed == 15) {
-        _showSmartCheckIn = true;
-      }
-      notifyListeners();
-    });
-
+    _activeStatus = 'starting';
+    _errorMessage = null;
     notifyListeners();
+
+    try {
+      final response = await JourneyService.instance.startJourney(
+        destinationName: destination,
+        destinationLatitude: destLatitude,
+        destinationLongitude: destLongitude,
+        eta: etaDateTime,
+        authToken: authToken,
+      );
+
+      _activeJourneyId = response['id'] as String;
+      _hasActiveJourney = true;
+      _activeDestination = destination;
+      _destinationLatitude = destLatitude;
+      _destinationLongitude = destLongitude;
+      _currentLatitude = startLatitude;
+      _currentLongitude = startLongitude;
+      _activeEta = eta;
+      _activeNotes = notes;
+      _activeSharedContactIds = contactIds;
+      _activeStartTime = DateTime.now();
+      _activeBattery = 82; // Reset battery level to 82% as required
+      _journeySecondsElapsed = 0;
+      _showSmartCheckIn = false;
+      _activePolylinePoints = initialPolylinePoints;
+      _remainingDistance = initialDistance;
+      _activeStatus = 'active';
+
+      // Start elapsed timer
+      _simulationTimer?.cancel();
+      _simulationTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        _journeySecondsElapsed++;
+        if (_journeySecondsElapsed == 15) {
+          _showSmartCheckIn = true;
+        }
+        notifyListeners();
+      });
+
+      // Start GPS listening
+      _startGpsSubscription(authToken);
+
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugPrint("startNewJourney error: $e");
+      _activeStatus = 'error';
+      _errorMessage = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
+  void _startGpsSubscription(String authToken) {
+    _positionSubscription?.cancel();
+    _lastRouteRecalculationPosition = null;
+    _lastRouteRecalculationTime = null;
+
+    _positionSubscription = LocationService.instance.getPositionStream(distanceFilter: 5).listen(
+      (Position position) {
+        _handleLocationUpdate(position, authToken);
+      },
+      onError: (error) {
+        debugPrint("Location stream error: $error");
+        _errorMessage = error.toString();
+        notifyListeners();
+      },
+    );
+  }
+
+  Future<void> _handleLocationUpdate(Position position, String authToken) async {
+    if (!_hasActiveJourney || _activeJourneyId == null) return;
+
+    _currentLatitude = position.latitude;
+    _currentLongitude = position.longitude;
+    notifyListeners();
+
+    try {
+      await JourneyService.instance.updateLocation(
+        journeyId: _activeJourneyId!,
+        latitude: position.latitude,
+        longitude: position.longitude,
+        batteryPercentage: _activeBattery.toDouble(),
+        authToken: authToken,
+      );
+    } catch (e) {
+      debugPrint("Failed to send location update to backend: $e");
+    }
+
+    double distanceMoved = 0.0;
+    if (_lastRouteRecalculationPosition != null) {
+      distanceMoved = Geolocator.distanceBetween(
+        _lastRouteRecalculationPosition!.latitude,
+        _lastRouteRecalculationPosition!.longitude,
+        position.latitude,
+        position.longitude,
+      );
+    }
+
+    final now = DateTime.now();
+    final timeElapsed = _lastRouteRecalculationTime == null
+        ? const Duration(minutes: 999)
+        : now.difference(_lastRouteRecalculationTime!);
+
+    if (_lastRouteRecalculationPosition == null || distanceMoved > 30 || timeElapsed.inSeconds > 60) {
+      _lastRouteRecalculationPosition = position;
+      _lastRouteRecalculationTime = now;
+      _recalculateRouteAndETA(position.latitude, position.longitude);
+    }
+  }
+
+  Future<void> _recalculateRouteAndETA(double lat, double lng) async {
+    if (_destinationLatitude == null || _destinationLongitude == null) return;
+
+    try {
+      final origin = LatLng(lat, lng);
+      final destination = LatLng(_destinationLatitude!, _destinationLongitude!);
+
+      final routeResult = await RouteService.instance.calculateRoute(
+        origin: origin,
+        destination: destination,
+      );
+
+      _activePolylinePoints = routeResult.polylinePoints;
+      _remainingDistance = routeResult.distance;
+      
+      final now = DateTime.now();
+      final etaTime = now.add(Duration(seconds: routeResult.durationSeconds));
+      final hour = etaTime.hour > 12 ? etaTime.hour - 12 : (etaTime.hour == 0 ? 12 : etaTime.hour);
+      final minute = etaTime.minute.toString().padLeft(2, '0');
+      final period = etaTime.hour >= 12 ? 'PM' : 'AM';
+      _activeEta = '$hour:$minute $period';
+      
+      notifyListeners();
+    } catch (e) {
+      debugPrint("Failed to recalculate route in background: $e");
+    }
   }
 
   void dismissSmartCheckIn() {
@@ -195,48 +350,75 @@ class HomeProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  void endCurrentJourney(JourneyStatus finalStatus) {
-    if (!_hasActiveJourney) return;
+  Future<bool> endCurrentJourney(JourneyStatus finalStatus, String authToken) async {
+    if (!_hasActiveJourney || _activeJourneyId == null) return false;
 
-    _simulationTimer?.cancel();
-    _simulationTimer = null;
-
-    final elapsedMin = (_journeySecondsElapsed / 60).ceil();
-    final elapsedLabel = elapsedMin <= 0 ? '1 min' : '$elapsedMin min';
-    
-    // Add simulated completed trip to history
-    final completedJourney = JourneyModel(
-      id: 'j-${DateTime.now().millisecondsSinceEpoch}',
-      destination: _activeDestination,
-      dateTime: _activeStartTime ?? DateTime.now(),
-      duration: elapsedLabel,
-      distanceKm: double.parse((0.1 * (_journeySecondsElapsed / 10) + 1.2).toStringAsFixed(1)), // mock distance
-      status: finalStatus,
-      eta: _activeEta,
-      notes: _activeNotes,
-      sharedContactIds: List.from(_activeSharedContactIds),
-      startBattery: _activeBattery,
-      endBattery: _activeBattery - 2,
-    );
-
-    _recentJourneys.insert(0, completedJourney);
-
-    // Reset active journey state
-    _hasActiveJourney = false;
-    _activeDestination = '';
-    _activeEta = '';
-    _activeNotes = null;
-    _activeSharedContactIds = [];
-    _activeStartTime = null;
-    _journeySecondsElapsed = 0;
-    _showSmartCheckIn = false;
-
+    _activeStatus = 'ending';
     notifyListeners();
+
+    try {
+      await JourneyService.instance.endJourney(
+        journeyId: _activeJourneyId!,
+        authToken: authToken,
+      );
+
+      _positionSubscription?.cancel();
+      _positionSubscription = null;
+      _simulationTimer?.cancel();
+      _simulationTimer = null;
+
+      final elapsedMin = (_journeySecondsElapsed / 60).ceil();
+      final elapsedLabel = elapsedMin <= 0 ? '1 min' : '$elapsedMin min';
+      
+      final completedJourney = JourneyModel(
+        id: _activeJourneyId!,
+        destination: _activeDestination,
+        dateTime: _activeStartTime ?? DateTime.now(),
+        duration: elapsedLabel,
+        distanceKm: double.tryParse(_remainingDistance.replaceAll(' km', '')) ?? 1.2,
+        status: finalStatus,
+        eta: _activeEta,
+        notes: _activeNotes,
+        sharedContactIds: List.from(_activeSharedContactIds),
+        startBattery: _activeBattery,
+        endBattery: _activeBattery - 2,
+      );
+
+      _recentJourneys.insert(0, completedJourney);
+
+      // Reset active journey state
+      _hasActiveJourney = false;
+      _activeJourneyId = null;
+      _activeDestination = '';
+      _activeEta = '';
+      _activeNotes = null;
+      _activeSharedContactIds = [];
+      _activeStartTime = null;
+      _journeySecondsElapsed = 0;
+      _showSmartCheckIn = false;
+      _currentLatitude = null;
+      _currentLongitude = null;
+      _destinationLatitude = null;
+      _destinationLongitude = null;
+      _activePolylinePoints = [];
+      _remainingDistance = 'Calculating...';
+      _activeStatus = 'idle';
+
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugPrint("Failed to end journey: $e");
+      _activeStatus = 'error';
+      _errorMessage = e.toString();
+      notifyListeners();
+      return false;
+    }
   }
 
   @override
   void dispose() {
     _simulationTimer?.cancel();
+    _positionSubscription?.cancel();
     super.dispose();
   }
 }

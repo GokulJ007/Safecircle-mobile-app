@@ -6,6 +6,7 @@ class UserModel {
   final String email;
   final String? phone;
   final String? profileImageUrl;
+  final String? token;
 
   const UserModel({
     required this.id,
@@ -13,6 +14,7 @@ class UserModel {
     required this.email,
     this.phone,
     this.profileImageUrl,
+    this.token,
   });
 
   Map<String, dynamic> toJson() {
@@ -22,6 +24,7 @@ class UserModel {
       'email': email,
       'phone': phone,
       'profileImageUrl': profileImageUrl,
+      'token': token,
     };
   }
 
@@ -32,6 +35,7 @@ class UserModel {
       email: json['email'] as String,
       phone: json['phone'] as String?,
       profileImageUrl: json['profileImageUrl'] as String?,
+      token: json['token'] as String?,
     );
   }
 }

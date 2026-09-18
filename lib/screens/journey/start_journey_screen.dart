@@ -6,6 +6,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import '../../core/constants/app_colors.dart';
 import '../../providers/home_provider.dart';
+import '../../providers/auth_provider.dart';
 import '../../widgets/primary_button.dart';
 import '../../models/place_model.dart';
 import '../../services/location_service.dart';
@@ -216,12 +217,21 @@ class _StartJourneyScreenState extends State<StartJourneyScreen> {
     }
   }
 
-  void _handleStartJourney() {
+  Future<void> _handleStartJourney() async {
     if (!_formKey.currentState!.validate()) return;
     if (_currentLocation == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Cannot start journey without GPS location. Please wait or retry.'),
+          backgroundColor: AppColors.sosRed,
+        ),
+      );
+      return;
+    }
+    if (_selectedPlace == null || _routeResult == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please select a valid destination with a computed route.'),
           backgroundColor: AppColors.sosRed,
         ),
       );
@@ -237,8 +247,22 @@ class _StartJourneyScreenState extends State<StartJourneyScreen> {
       return;
     }
 
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final authToken = authProvider.currentUser?.token ?? '';
+    if (authToken.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Authentication session expired. Please log in again.'),
+          backgroundColor: AppColors.sosRed,
+        ),
+      );
+      return;
+    }
+
     final destinationName = _destinationController.text.trim();
     final eta = _selectedEtaText;
+    final now = DateTime.now();
+    final etaDateTime = now.add(Duration(seconds: _routeResult!.durationSeconds));
 
     // Log the unified data structure as required
     debugPrint("=== SAFE CIRCLE JOURNEY CONFIRMATION ===");
@@ -252,23 +276,51 @@ class _StartJourneyScreenState extends State<StartJourneyScreen> {
     debugPrint("Shared Contacts: ${_selectedContactIds.toList()}");
     debugPrint("=========================================");
 
-    final homeProvider = Provider.of<HomeProvider>(context, listen: false);
-    homeProvider.startNewJourney(
-      destination: destinationName,
-      eta: eta,
-      notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
-      contactIds: _selectedContactIds.toList(),
-    );
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text("Journey started to $destinationName (ETA: $eta)"),
-        backgroundColor: AppColors.safeGreen,
+    // Show loading overlay
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(),
       ),
     );
 
-    // Redirect to active journey screen
-    context.pushReplacement('/journey');
+    final homeProvider = Provider.of<HomeProvider>(context, listen: false);
+    final success = await homeProvider.startNewJourney(
+      destination: destinationName,
+      destLatitude: _selectedPlace!.latitude,
+      destLongitude: _selectedPlace!.longitude,
+      startLatitude: _currentLocation!.latitude,
+      startLongitude: _currentLocation!.longitude,
+      eta: eta,
+      etaDateTime: etaDateTime,
+      notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+      contactIds: _selectedContactIds.toList(),
+      authToken: authToken,
+      initialPolylinePoints: _routeResult!.polylinePoints,
+      initialDistance: _routeResult!.distance,
+    );
+
+    if (!mounted) return;
+    Navigator.pop(context); // Pop loading dialog
+
+    if (success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Journey started to $destinationName (ETA: $eta)"),
+          backgroundColor: AppColors.safeGreen,
+        ),
+      );
+      // Redirect to active journey screen
+      context.pushReplacement('/journey');
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Failed to start journey: ${homeProvider.errorMessage ?? 'Unknown error'}"),
+          backgroundColor: AppColors.sosRed,
+        ),
+      );
+    }
   }
 
   @override

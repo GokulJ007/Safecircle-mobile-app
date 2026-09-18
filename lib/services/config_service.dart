@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 class ConfigService {
   ConfigService._();
 
+  static const String backendBaseUrl = "http://192.168.0.2:8000";
+
   static const MethodChannel _channel = MethodChannel('com.example.safecircle/config');
 
   /// Fetches the Google Maps/Places API key defined in local.properties -> AndroidManifest.xml metadata.

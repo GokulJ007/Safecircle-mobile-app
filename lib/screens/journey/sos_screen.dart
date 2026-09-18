@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../core/constants/app_colors.dart';
 import '../../models/journey_model.dart';
 import '../../providers/home_provider.dart';
+import '../../providers/auth_provider.dart';
 
 class SosScreen extends StatefulWidget {
   const SosScreen({super.key});
@@ -51,9 +52,12 @@ class _SosScreenState extends State<SosScreen> with SingleTickerProviderStateMix
     });
 
     final homeProvider = Provider.of<HomeProvider>(context, listen: false);
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final token = authProvider.currentUser?.token ?? '';
+
     if (homeProvider.hasActiveJourney) {
       // Complete journey in SOS state
-      homeProvider.endCurrentJourney(JourneyStatus.sosTriggered);
+      homeProvider.endCurrentJourney(JourneyStatus.sosTriggered, token);
     }
   }
 

@@ -47,14 +47,17 @@ class AuthProvider extends ChangeNotifier {
   }) async {
     _setLoading();
     try {
-      final user = await _authService.signup(
+      // Register user on the backend
+      await _authService.signup(
         fullName: fullName,
         email: email,
         password: password,
         phone: phone,
       );
-      await _persistSession(user);
-      _currentUser = user;
+      // Immediately log the user in to retrieve JWT access token
+      final userWithToken = await _authService.login(email: email, password: password);
+      await _persistSession(userWithToken);
+      _currentUser = userWithToken;
       _status = AuthStatus.authenticated;
       notifyListeners();
       return true;

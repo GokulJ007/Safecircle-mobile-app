@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'config_service.dart';
 
 /// The result returned from calculating a route.
 class RouteResult {
@@ -26,7 +27,7 @@ class RouteService {
   static final RouteService instance = RouteService._();
 
   // Local development host Wi-Fi IP address pointing to local FastAPI backend
-  static const String _backendBaseUrl = "http://192.168.0.7:8000";
+  static const String _backendBaseUrl = ConfigService.backendBaseUrl;
 
   /// Calculates a route between [origin] and [destination] by invoking the backend routes endpoint.
   Future<RouteResult> calculateRoute({
